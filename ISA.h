@@ -204,4 +204,40 @@ extern "C" INSTRUCTION MakeSUB(size_t rd, size_t rs1, size_t rs2)
     return retval;
 }
 
+extern "C" INSTRUCTION MakeBEQ(size_t rs1, size_t rs2, int32_t delta)
+{
+    assert(rs1 < 32);
+    assert(rs2 < 32);
+    assert((-4096 <= delta) && (delta < 4096));
+
+    B_TYPE retval;
+    retval.opcode = 0x63;
+    retval.funct3 = 0x0;
+    retval.imm12  = ((delta & 0x1000) >> 12);
+    retval.imm11  = ((delta & 0x800)  >> 11);
+    retval.imm4   = ((delta & 0x1E)   >> 1);
+    retval.imm6   = ((delta & 0x7E0)  >> 5);
+    retval.rs1    = rs1;
+    retval.rs2    = rs2;
+    return retval;
+}
+
+extern "C" INSTRUCTION MakeBNE(size_t rs1, size_t rs2, int32_t delta)
+{
+    assert(rs1 < 32);
+    assert(rs2 < 32);
+    assert((-4096 <= delta) && (delta < 4096));
+
+    B_TYPE retval;
+    retval.opcode = 0x63;
+    retval.funct3 = 0x1;
+    retval.imm12  = ((delta & 0x1000) >> 12);
+    retval.imm11  = ((delta & 0x800)  >> 11);
+    retval.imm4   = ((delta & 0x1E)   >> 1);
+    retval.imm6   = ((delta & 0x7E0)  >> 5);
+    retval.rs1    = rs1;
+    retval.rs2    = rs2;
+    return retval;
+}
+
 #endif // _ISA_H_

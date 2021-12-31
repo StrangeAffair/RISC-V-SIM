@@ -10,10 +10,29 @@
 
 size_t GLOBAL_STAGE = 0;
 
-class Wire
+class BaseBlock
 {
 public:
-    static constexpr const char* TypeName = "FlipFlop";
+    static constexpr const char* TypeName = "BaseBlock";
+
+public:
+    virtual const char* Type() const
+    { return TypeName; }
+
+    virtual void step() = 0;
+};
+
+class Wire : public BaseBlock
+{
+public:
+    static constexpr const char* TypeName = "Wire";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
+
+    void step() override
+    { stage = GLOBAL_STAGE; }
 
 public:
     Wire(const char* name = nullptr):
@@ -23,24 +42,21 @@ public:
     {}
 
 public:
-    virtual const char* Type() const
-    { return TypeName; }
-
-    virtual void update()
-    {
-        stage = GLOBAL_STAGE;
-    }
-
-public:
     const char* GetName() const
     { return name; }
 
 public:
     template<class T = uint32_t>
-    T GetValue(bool change = true)
+    T OldValue() const
     {
-        if ((change) && (stage != GLOBAL_STAGE))
-            update();
+        return static_cast<T>(value);
+    }
+
+    template<class T = uint32_t>
+    T GetValue()
+    {
+        if (stage != GLOBAL_STAGE)
+            step();
         return static_cast<T>(value);
     }
 
@@ -78,17 +94,7 @@ protected:
     size_t      stage;
 };
 
-class BaseBlock
-{
-public:
-    virtual const char* name() const = 0;
-
-    virtual void step() = 0;
-};
-
-Wire* GetWire(const char* name);
-
-class FlipFlop : public Wire, public BaseBlock
+class FlipFlop : public Wire
 {
 public:
     static constexpr const char* TypeName = "FlipFlop";
@@ -97,19 +103,10 @@ public:
     const char* Type() const override
     { return TypeName; }
 
-    const char* name() const override
-    { return TypeName; }
-
-    void update() override
-    {
-        // we use raw value here
-        value = input->GetValue(false);
-        stage = GLOBAL_STAGE;
-    }
-
     void step() override
     {
-        update();
+        value = input->OldValue();
+        stage = GLOBAL_STAGE;
     }
 
 public:
@@ -124,6 +121,8 @@ public:
 
 std::unordered_map<const char*, Wire*> Wires;
 
+Wire* GetWire(const char* name);
+
 void FillWires()
 {
     // Fetch FlipFlop (before fetch stage)
@@ -134,8 +133,10 @@ void FillWires()
     Wires["PC"]      = Wires["Fetch FlipFlop OUT"];
     Wires["PC_EX"]   = new Wire("PC_EX");
     Wires["PC_DISP"] = new Wire("PC_DISP");
-    Wires["PC_R"]    = new Wire("PC_R");
+    Wires["PC_R"]    = new Wire("PC_RF");
     Wires["PC_NEXT"] = Wires["Fetch FlipFlop IN"];
+
+    Wires["PC_RF"] = Wires["PC_R"];
 
     // Fetch IMEM
     Wires["IMEM A"] = Wires["PC"];
@@ -153,7 +154,8 @@ void FillWires()
     Wires["Decode FlipFlop PC OUT"] = new Wire();
 
     Wires["Decode FlipFlop PC_R IN"]  = Wires["PC_R"];
-    Wires["Decode FlipFlop PC_R OUT"] = new FlipFlop(Wires["Decode FlipFlop PC_R IN"], "PC_R");
+    Wires["Decode FlipFlop PC_R OUT"] = new FlipFlop(Wires["Decode FlipFlop PC_R IN"], "PC_RD");
+    Wires["PC_RD"] = Wires["Decode FlipFlop PC_R OUT"];
 
     // Decode RegFile
     Wires["Decode RegFile INSTR"] = Wires["INSTRUCTION"];
@@ -194,7 +196,11 @@ void FillWires()
 
     Wires["ALU LEFT"]   = Wires["RS1V"];
     Wires["ALU RIGHT"]  = Wires["SRC2"];
-    Wires["ALU RESULT"] = new Wire();
+    Wires["ALU RESULT"] = new Wire("ALU RESULT");
+
+    Wires["CMP LEFT"]   = Wires["RS1V"];
+    Wires["CMP RIGHT"]  = Wires["RS2V"];
+    Wires["CMP RESULT"] = new Wire("CMP RESULT");
 
     // Memory
     Wires["Memory WE_GEN WB_WE"]  = new FlipFlop(Wires["WE_GEN WB_WE"],  "Memory WE_GEN WB_WE");
@@ -218,6 +224,8 @@ void FillWires()
     Wires["Memory HU_MEM_RD"] = Wires["Memory INSTRUCTION"];
 
     // Write Back
+    Wires["WB CONTROL_EX"] = new FlipFlop(Wires["Memory CONTROL_EX"], "WB CONTROL_EX");
+
     Wires["WB_WE"] = new FlipFlop(GetWire("Memory WE_GEN WB_WE"), "WB_WE");
     Wires["WB_D"]  = new FlipFlop(GetWire("Memory WB_D"),         "WB_D");
     Wires["WB_A"]  = new FlipFlop(GetWire("Memory INSTRUCTION"),  "WB_A");
@@ -237,13 +245,16 @@ Wire* GetWire(const char* name)
     return Wires[name];
 }
 
-
+void PrintWires();
 
 class InstructionMemory : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "InstructionMemory"; }
+    static constexpr const char* TypeName = "InstructionMemory";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
@@ -296,15 +307,18 @@ private:
 class NextInstruction : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "NextInstruction"; }
+    static constexpr const char* TypeName = "NextInstruction";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
         if (!PC_R->GetValue<bool>())
         { *PC_NEXT = *PC + 4; }
         else
-        { abort(); }
+        { *PC_NEXT = *PC_EX + *PC_DISP; }
     }
 
 public:
@@ -329,8 +343,11 @@ public:
 class ControlUnit : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "ControlUnit"; }
+    static constexpr const char* TypeName = "ControlUnit";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
@@ -464,8 +481,11 @@ public:
 class RegisterFile : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "RegisterFile"; }
+    static constexpr const char* TypeName = "RegisterFile";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
@@ -473,15 +493,13 @@ public:
         size_t rs1 = INSTRUCTION(*instruction).r_type.rs1;
         size_t rs2 = INSTRUCTION(*instruction).r_type.rs2;
 
-        if (WB_WE->GetValue<bool>())
+        if (WB_WE->GetValue<bool>() && rd != 0)
         {
-            if (rd == 0)
-                return;
-
             std::cout << "WB RegisterFile offset = " << rd << std::endl;
             regs[rd] = *WB_D;
         }
 
+        std::cout << "rs1 = " << rs1 << ", rs2 = " << rs2 << std::endl;
         *RS1 = regs[rs1];
         *RS2 = regs[rs2];
     }
@@ -507,27 +525,38 @@ public:
     Wire* RS1;
     Wire* RS2;
 
-private:
+public:
     uint32_t regs[32];
 };
 
 class WriteEnableGenerator : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "WriteEnableGenerator"; }
+    static constexpr const char* TypeName = "WriteEnableGenerator";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
         ControlUnitFlags flags = INSTRUCTION(*CONTROL_EX).flags;
 
-        *MEM_WE = flags.MEM_WEN;
-        *WB_WE  = flags.REG_WEN;
+        if (!flags.BRN_COND && V_EX->GetValue<bool>())
+        {
+            *MEM_WE = flags.MEM_WEN;
+            *WB_WE  = flags.REG_WEN;
+        }
+        else
+        {
+            *MEM_WE = false;
+            *WB_WE  = false;
+        }
     }
 
 public:
     WriteEnableGenerator():
-        V_EX      (nullptr),
+        V_EX      (GetWire("V_EX")),
         CONTROL_EX(GetWire("CONTROL_EX")),
         MEM_WE    (GetWire("WE_GEN MEM_WE")),
         WB_WE     (GetWire("WE_GEN WB_WE"))
@@ -545,29 +574,48 @@ public:
 class HazardUnit : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "HazardUnit"; }
+    static constexpr const char* TypeName = "HazardUnit";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
-        uint32_t rs1    = INSTRUCTION(*HU_EX_INSTR) .r_type.rs1;
-        uint32_t rs2    = INSTRUCTION(*HU_EX_INSTR) .r_type.rs2;
-        uint32_t rd_mem = INSTRUCTION(*HU_MEM_RDMEM).r_type.rd;
-        uint32_t rd_wb  = INSTRUCTION(*HU_MEM_RDWB) .r_type.rd;
+        uint32_t rs1    = INSTRUCTION(HU_EX_INSTR ->OldValue()).r_type.rs1;
+        uint32_t rs2    = INSTRUCTION(HU_EX_INSTR ->OldValue()).r_type.rs2;
+        uint32_t rd_mem = INSTRUCTION(HU_MEM_RDMEM->OldValue()).r_type.rd;
+        uint32_t rd_wb  = INSTRUCTION(HU_MEM_RDWB ->OldValue()).r_type.rd;
 
-        if (rs1 == rd_mem)
-            *HU_RS1 = 0x1;
-        if (rs1 == rd_wb)
-            *HU_RS1 = 0x2;
+        *HU_RS1 = 0x0;
+        *HU_RS2 = 0x0;
 
-        if (rs2 == rd_mem)
-            *HU_RS2 = 0x1;
-        if (rs2 == rd_wb)
-            *HU_RS2 = 0x2;
+        ControlUnitFlags flagsM = INSTRUCTION(HU_CONTROL_M->OldValue()).flags;
+        if (!flagsM.BRN_COND && flagsM.REG_WEN && !flagsM.MEM2REG)
+        {
+            // we only use BP_MEM (ALU result) when we will choose ALU result and write back
+            if (rs1 == rd_mem)
+                *HU_RS1 = 0x1;
+            if (rs2 == rd_mem)
+                *HU_RS2 = 0x1;
+        }
+
+        ControlUnitFlags flagsWB = INSTRUCTION(HU_CONTROL_WB->OldValue()).flags;
+        if (!flagsWB.BRN_COND && flagsM.REG_WEN)
+        {
+            if (rs1 == rd_wb)
+                *HU_RS1 = 0x2;
+            if (rs2 == rd_wb)
+                *HU_RS2 = 0x2;
+        }
     }
 
 public:
     HazardUnit():
+        // not on scheme !!!
+        HU_CONTROL_M  (GetWire("Memory CONTROL_EX")),
+        HU_CONTROL_WB (GetWire("WB CONTROL_EX")),
+
         HU_EX_INSTR (GetWire("Execute INSTRUCTION")),
         HU_MEM_RDMEM(GetWire("Memory HU_MEM_RD")),
         HU_MEM_RDWB (GetWire("WB HU_MEM_RD")),
@@ -576,6 +624,9 @@ public:
     {}
 
 public:
+    Wire* HU_CONTROL_M;
+    Wire* HU_CONTROL_WB;
+
     Wire* HU_EX_INSTR;
     Wire* HU_MEM_RDMEM;
     Wire* HU_MEM_RDWB;
@@ -588,8 +639,11 @@ public:
 class Immediate : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "Immediate"; }
+    static constexpr const char* TypeName = "Immediate";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
@@ -608,30 +662,39 @@ public:
 
         // S-type
         {
-            bool sign = instr.s_type.imm7 & 0x40;
-            bool imm7 = instr.s_type.imm7 & 0x3f;
-            if (sign)
-                *output2 = -((imm7 << 5)  + instr.s_type.imm5);
+            bool     sign  = (instr.s_type.imm7 & 0x40);
+            uint32_t value = (instr.s_type.imm7 & 0x3f) + instr.s_type.imm5;
+
+            if (!sign)
+                *output2 = value;
             else
-                *output2 = +((imm7 << 5)  + instr.s_type.imm5);
+                *output2 = -((~value & 0x7ff) + 1);
         }
 
         // SB-type
-        if (instr.b_type.imm12)
-            *output3 = -((instr.b_type.imm11 << 11) + (instr.b_type.imm6 << 5) + instr.b_type.imm4);
-        else
-            *output3 = +((instr.b_type.imm11 << 11) + (instr.b_type.imm6 << 5) + instr.b_type.imm4);
+        {
+            uint32_t value = (instr.b_type.imm11 << 11) + (instr.b_type.imm6 << 5) + (instr.b_type.imm4 << 1);
+
+            if (!instr.b_type.imm12)
+                *output3 = value;
+            else
+                *output3 = -((~value & 0xfff) + 1);
+        }
 
         // U-type (imm type == int32)
         *output4 = instr.u_type.imm << 12;
 
         // UJ-type
-        if (instr.j_type.imm20)
-            *output5 = -((instr.j_type.imm12_19 << 12) + (instr.j_type.imm11 << 12) + (instr.j_type.imm1_10 << 1));
-        else
-            *output5 = +((instr.j_type.imm12_19 << 12) + (instr.j_type.imm11 << 12) + (instr.j_type.imm1_10 << 1));
+        {
+            uint32_t value = (instr.j_type.imm12_19 << 12) + (instr.j_type.imm11 << 12) + (instr.j_type.imm1_10 << 1);
 
-        *PC_DISP = *output1;
+            if (!instr.j_type.imm20)
+                *output5 = value;
+            else
+                *output5 = -((~value & 0xfffff) + 1);
+        }
+
+        *PC_DISP = *output3;
     }
 
 public:
@@ -660,8 +723,11 @@ public:
 class RS_TO_RSV : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "RS_TO_RSV"; }
+    static constexpr const char* TypeName = "RS_TO_RSV";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
@@ -722,12 +788,16 @@ public:
 class SRC2_SELECTOR : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "SRC2_SELECTOR"; }
+    static constexpr const char* TypeName = "SRC2_SELECTOR";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
         uint32_t ALU_SRC2 = INSTRUCTION(*CONTROL_EX).flags.SRC2;
+        std::cout << "ALU_SRC2 = " << ALU_SRC2 << std::endl;
 
         switch (ALU_SRC2)
         {
@@ -792,8 +862,11 @@ public:
     constexpr static size_t SR   = 5;
 
 public:
-    const char* name() const override
-    { return "ALU"; }
+    static constexpr const char* TypeName = "ArithmeticLogicUnit";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step()
     {
@@ -850,8 +923,11 @@ public:
 class Comparator : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "Comparator"; }
+    static constexpr const char* TypeName = "Comparator";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
@@ -866,20 +942,28 @@ public:
             *output = ((*RS1V) != (*RS2V));
             break;
         case 0x4: // BLT
-            *output = ((*RS1V) <  (*RS2V));
+            *output = ((int32_t) (*RS1V) <  (int32_t) (*RS2V));
             break;
         case 0x5: // BGE
+            *output = ((int32_t) (*RS1V) >= (int32_t) (*RS2V));
+            break;
+        case 0x6: // BLTU
+            *output = ((*RS1V) <  (*RS2V));
+            break;
+        case 0x7: // BGEU
             *output = ((*RS1V) >= (*RS2V));
             break;
+        default:
+            throw "bad CMPOP";
         }
-
     }
 
 public:
     Comparator():
         CONTROL_EX (GetWire("CONTROL_EX")),
         RS1V       (GetWire("RS1V")),
-        RS2V       (GetWire("RS2V"))
+        RS2V       (GetWire("RS2V")),
+        output     (GetWire("CMP RESULT"))
     {}
 
 public:
@@ -891,11 +975,81 @@ public:
     Wire* output;
 };
 
+class PC_R_Generator: public BaseBlock
+{
+public:
+    static constexpr const char* TypeName = "PC_R_Generator";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
+
+    void step() override
+    {
+        bool BRN_COND = INSTRUCTION(*CONTROL_EX).flags.BRN_COND;
+        bool CMP_EXIT = this->CMP_EXIT->GetValue<bool>();
+
+        if (BRN_COND && CMP_EXIT)
+            *PC_R = true;
+        else
+            *PC_R = false;
+    }
+
+public:
+    PC_R_Generator():
+        CONTROL_EX (GetWire("CONTROL_EX")), // bits selector?
+        CMP_EXIT   (GetWire("CMP RESULT")),
+        PC_R       (GetWire("PC_R"))
+    {}
+
+public:
+    Wire* CONTROL_EX;
+    Wire* CMP_EXIT;
+    Wire* PC_R;
+};
+
+class V_DE_Generator : public BaseBlock
+{
+public:
+    static constexpr const char* TypeName = "V_DE_Generator";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
+
+    void step() override
+    {
+        bool PC_RD = this->PC_RD->OldValue<bool>();
+        bool PC_RF = this->PC_RF->GetValue<bool>();
+
+        // NOR
+        if (PC_RF || PC_RD)
+            *V_DE = false;
+        else
+            *V_DE = true;
+    }
+
+public:
+    V_DE_Generator():
+        PC_RF(GetWire("PC_RF")),
+        PC_RD(GetWire("PC_RD")),
+        V_DE (GetWire("V_DE"))
+    {}
+
+public:
+    Wire* PC_RF; // PC_R Fetch
+    Wire* PC_RD; // PC_R Decode
+    Wire* V_DE;
+};
+
 class DataMemory : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "DataMemory"; }
+    static constexpr const char* TypeName = "DataMemory";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
@@ -903,7 +1057,7 @@ public:
         {
             uint32_t extend = INSTRUCTION(*EXTEND).flags.ALUOP;
             bool     sign   = (extend & 0x4);
-            bool     count  = 1 << (extend & 0x3);
+            uint32_t count  = 1 << (extend & 0x3);
 
             if (MEM_WE->GetValue<bool>())
             {
@@ -978,8 +1132,11 @@ public:
 class DMEM_RD_OR_ALU : public BaseBlock
 {
 public:
-    const char* name() const override
-    { return "DMEM_RD_OR_ALU"; }
+    static constexpr const char* TypeName = "DMEM_RD_OR_ALU";
+
+public:
+    const char* Type() const override
+    { return TypeName; }
 
     void step() override
     {
@@ -1009,15 +1166,65 @@ public:
 };
 
 
+void PrintWires()
+{
+    // Prints output wires of all stages
+    std::cout << "Fetch:" << '\n';
+    std::cout << "Fetch instr = 0x" << std::hex << (Wires["IMEM D"]->OldValue()) << std::dec << '\n';
+    std::cout << "PC_R        = "   << (Wires["PC_R"]->OldValue()) << '\n';
+    std::cout << "PC          = "   << (Wires["PC"]->OldValue())   << '\n';
+    std::cout << '\n';
+
+    ControlUnitFlags flagsD = INSTRUCTION(Wires["CU FLAGS"]->OldValue()).flags;
+    std::cout << "Decode:" << '\n';
+    std::cout << "Decode instr = 0x" << std::hex << (Wires["INSTRUCTION"]->OldValue()) << std::dec << '\n';
+    std::cout << "PC_DE        = "   << (Wires["PC_DE"]->OldValue()) << '\n';
+    std::cout << "RF.RS1       = "   << (Wires["RS1"]->OldValue()) << '\n';
+    std::cout << "RF.RS2       = "   << (Wires["RS2"]->OldValue()) << '\n';
+    std::cout << "CU.flags     = "   << flagsD.ALUOP << ' ' << flagsD.SRC2 << ' ' << flagsD.BRN_COND << flagsD.MEM2REG << flagsD.MEM_WEN << flagsD.REG_WEN << '\n';
+    std::cout << "V_DE         = "   << (Wires["V_DE"]->OldValue()) << '\n';
+    std::cout << '\n';
+
+    ControlUnitFlags flagsE = INSTRUCTION(Wires["CONTROL_EX"]->OldValue()).flags;
+    std::cout << "Execute:" << '\n';
+    std::cout << "Execute instr = 0x" << std::hex << (Wires["Execute INSTRUCTION"]->OldValue()) << std::dec << '\n';
+    std::cout << "WE_GEN WB_WE  = "   << (Wires["WE_GEN WB_WE"]->OldValue())  << '\n';
+    std::cout << "WE_GEN MEM_WE = "   << (Wires["WE_GEN MEM_WE"]->OldValue()) << '\n';
+    std::cout << "CONTROL_EX    = "   << flagsE.ALUOP << ' ' << flagsE.SRC2 << ' ' << flagsE.REG_WEN << flagsE.MEM_WEN << flagsE.MEM2REG << flagsE.BRN_COND << '\n';
+    std::cout << "RF.RS1        = "   << (Wires["Execute RS1"]->OldValue()) << '\n';
+    std::cout << "ALU           = "   << (Wires["ALU RESULT"]->OldValue()) << '\n';
+    std::cout << '\n';
+
+    ControlUnitFlags flagsM = INSTRUCTION(Wires["Memory CONTROL_EX"]->OldValue()).flags;
+    std::cout << "Memory:" << '\n';
+    std::cout << "Memory instr      = 0x" << std::hex << (Wires["Memory INSTRUCTION"]->OldValue()) << std::dec << '\n';
+    std::cout << "Memory CONTROL_EX = "   << flagsM.ALUOP << ' ' << flagsM.SRC2 << ' ' << flagsM.REG_WEN << flagsM.MEM_WEN << flagsM.MEM2REG << flagsM.BRN_COND << '\n';
+    std::cout << "WB_WE             = "   << (Wires["Memory WE_GEN WB_WE"]->OldValue()) << '\n';
+    std::cout << "WB_D              = "   << (Wires["Memory WB_D"]->OldValue())         << '\n';
+    std::cout << '\n';
+
+    ControlUnitFlags flagsWB = INSTRUCTION(Wires["WB CONTROL_EX"]->OldValue()).flags;
+    std::cout << "WB:" << '\n';
+    std::cout << "WB instr      = 0x" << std::hex << (Wires["WB_A"]->OldValue()) << std::dec << '\n';
+    std::cout << "WB CONTROL_EX = "   << flagsWB.ALUOP << ' ' << flagsWB.SRC2 << ' ' << flagsWB.REG_WEN << flagsWB.MEM_WEN << flagsWB.MEM2REG << flagsWB.BRN_COND << '\n';
+    std::cout << "WB_WE         = "   << (Wires["WB_WE"]->OldValue()) << '\n';
+    std::cout << "WB_A          = "   << INSTRUCTION(Wires["WB_A"]->OldValue()).r_type.rd << '\n';
+    std::cout << "WB_D          = "   << (Wires["WB_D"]->OldValue())  << '\n';
+
+    std::cout << "-----------------------------------------------------" << std::endl;
+}
+
 int main()
 {
     INSTRUCTION cmds[] = {
-        MakeADDI(15, 0,  1024),
-        MakeADDI(16, 0,  2000),
-        MakeADD (1,  15, 16),
-        MakeADDI(0,  0,  0), // NOP
-        MakeADDI(0,  0,  0), // NOP
-        MakeADDI(0,  0,  0), // NOP
+        MakeADDI(1, 0, 20),  // r1 = rax (sum)
+        MakeADDI(2, 0, 10),  // r2 = rcx (cycle counter)
+        MakeBEQ (2, 0, +16), // for(r2 = 10; r2 != 0; --r2)
+        MakeADDI(1, 1, 15),  //   r1 += 15;
+        MakeADDI(2, 2, -1),
+        MakeBEQ (0, 0, -12), // absolute short jump
+        MakeADDI(1, 1, 1), // NOP
+        MakeADDI(1, 1, 2), // NOP
         MakeADDI(0,  0,  0), // NOP
     };
 
@@ -1030,6 +1237,7 @@ int main()
     IMEM.SetMemory(cmds, sizeof(cmds) / sizeof(cmds[0]));
 
     // Stage 2 - Decode
+    V_DE_Generator  V_DE_GEN;
     ControlUnit     CU;
     RegisterFile    RF;
 
@@ -1041,6 +1249,9 @@ int main()
     Immediate            IMM;
     SRC2_SELECTOR        SRC2_SEL;
     ArithmeticLogicUnit  ALU;
+
+    Comparator     CMP;
+    PC_R_Generator PC_R_GEN;
 
     // Stage 4 - Memory
     DataMemory          DMEM;
@@ -1054,14 +1265,16 @@ int main()
     std::vector<BaseBlock*> STAGE_DECODE  = {
         dynamic_cast<FlipFlop*>(Wires["INSTRUCTION"]),
         dynamic_cast<FlipFlop*>(Wires["PC_DE"]),
+        dynamic_cast<FlipFlop*>(Wires["PC_RD"]),
+        &V_DE_GEN,
         &CU,
         &RF,
     };
     std::vector<BaseBlock*> STAGE_EXECUTE = {
+        dynamic_cast<FlipFlop*>(Wires["Execute INSTRUCTION"]),
         dynamic_cast<FlipFlop*>(Wires["CONTROL_EX"]),
         dynamic_cast<FlipFlop*>(Wires["Execute RS1"]),
         dynamic_cast<FlipFlop*>(Wires["Execute RS2"]),
-        dynamic_cast<FlipFlop*>(Wires["Execute INSTRUCTION"]),
         dynamic_cast<FlipFlop*>(Wires["PC_EX"]),
         &HU,
         &WE_GEN,
@@ -1069,27 +1282,31 @@ int main()
         &RS2V_SEL,
         &IMM,
         &SRC2_SEL,
-        &ALU
+        &ALU,
+        &CMP,
+        &PC_R_GEN,
     };
     std::vector<BaseBlock*> STAGE_MEMORY  = {
+        dynamic_cast<FlipFlop*>(Wires["WB_WE"]),
+        dynamic_cast<FlipFlop*>(Wires["WB_D"]),
+        dynamic_cast<FlipFlop*>(Wires["WB_A"]),
+
+        dynamic_cast<FlipFlop*>(Wires["Memory INSTRUCTION"]),
         dynamic_cast<FlipFlop*>(Wires["Memory WE_GEN MEM_WE"]),
         dynamic_cast<FlipFlop*>(Wires["Memory WE_GEN WB_WE"]),
         dynamic_cast<FlipFlop*>(Wires["Memory CONTROL_EX"]),
         dynamic_cast<FlipFlop*>(Wires["Memory RS1"]),
         dynamic_cast<FlipFlop*>(Wires["Memory ALU"]),
-        dynamic_cast<FlipFlop*>(Wires["Memory INSTRUCTION"]),
+
         &DMEM,
         &RSEL,
-        dynamic_cast<FlipFlop*>(Wires["WB_WE"]),
-        dynamic_cast<FlipFlop*>(Wires["WB_D"]),
-        dynamic_cast<FlipFlop*>(Wires["WB_A"]),
     };
 
     // Running
     for(BaseBlock* block : STAGE_FETCH)
         block->step();
 
-    std::cout << "current instr = 0x" << std::hex << *(IMEM.instruction) << std::endl;
+    PrintWires();
 
     ++GLOBAL_STAGE;
 
@@ -1098,7 +1315,7 @@ int main()
     for(BaseBlock* block : STAGE_FETCH)
         block->step();
 
-    std::cout << "current instr = 0x" << std::hex << *(IMEM.instruction) << std::dec << std::endl;
+    PrintWires();
 
     ++GLOBAL_STAGE;
 
@@ -1109,7 +1326,7 @@ int main()
     for(BaseBlock* block : STAGE_FETCH)
         block->step();
 
-    std::cout << "current instr = 0x" << std::hex << *(IMEM.instruction) << std::dec << std::endl;
+    PrintWires();
 
     ++GLOBAL_STAGE;
 
@@ -1126,16 +1343,12 @@ int main()
             for(BaseBlock* block : STAGE_FETCH)
                 block->step();
 
-            std::cout << "current instr = 0x" << std::hex << *(IMEM.instruction) << std::dec << std::endl;
-
-            std::cout << "WB_WE = " << *(Wires["WB_WE"]) << std::endl;
-            std::cout << "WB_D  = " << *(Wires["WB_D"])  << std::endl;
-            std::cout << "WB_A  = " << *(Wires["WB_A"])  << std::endl;
-
-            std::cout << "RS1 = " << *(RF.RS1) << std::endl;
-            std::cout << "RS2 = " << *(RF.RS2) << std::endl;
+            PrintWires();
 
             ++GLOBAL_STAGE;
+
+            std::cout << "*** r1 = " << RF.regs[1] << std::endl;
+            std::cout << "*** r2 = " << RF.regs[2] << std::endl;
         }
         catch(const char* message)
         {
