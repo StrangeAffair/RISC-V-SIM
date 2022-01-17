@@ -88,7 +88,7 @@ public:
     operator uint32_t()
     { return GetValue(); }
 
-protected:
+//protected:
     const char* name;
     uint32_t    value;
     size_t      stage;
@@ -105,8 +105,11 @@ public:
 
     void step() override
     {
-        value = input->OldValue();
-        stage = GLOBAL_STAGE;
+        if (stage != GLOBAL_STAGE)
+        {
+            value = input->OldValue();
+            stage = GLOBAL_STAGE;
+        }
     }
 
 public:
@@ -133,10 +136,8 @@ void FillWires()
     Wires["PC"]      = Wires["Fetch FlipFlop OUT"];
     Wires["PC_EX"]   = new Wire("PC_EX");
     Wires["PC_DISP"] = new Wire("PC_DISP");
-    Wires["PC_R"]    = new Wire("PC_RF");
+    Wires["PC_R"]    = new Wire("PC_R");
     Wires["PC_NEXT"] = Wires["Fetch FlipFlop IN"];
-
-    Wires["PC_RF"] = Wires["PC_R"];
 
     // Fetch IMEM
     Wires["IMEM A"] = Wires["PC"];
@@ -154,8 +155,9 @@ void FillWires()
     Wires["Decode FlipFlop PC OUT"] = new Wire();
 
     Wires["Decode FlipFlop PC_R IN"]  = Wires["PC_R"];
-    Wires["Decode FlipFlop PC_R OUT"] = new FlipFlop(Wires["Decode FlipFlop PC_R IN"], "PC_RD");
-    Wires["PC_RD"] = Wires["Decode FlipFlop PC_R OUT"];
+    Wires["Decode FlipFlop PC_R OUT"] = new FlipFlop(Wires["Decode FlipFlop PC_R IN"], "PC_RF");
+    Wires["PC_RF"] = Wires["Decode FlipFlop PC_R OUT"];
+    Wires["PC_RD"] = Wires["PC_R"];
 
     // Decode RegFile
     Wires["Decode RegFile INSTR"] = Wires["INSTRUCTION"];
@@ -590,8 +592,11 @@ public:
         *HU_RS1 = 0x0;
         *HU_RS2 = 0x0;
 
+        std::cout << "REG_WE_M  = " << *REG_WE_M  << '\n';
+        std::cout << "REG_WE_WB = " << *REG_WE_WB << '\n';
+
         ControlUnitFlags flagsM = INSTRUCTION(HU_CONTROL_M->OldValue()).flags;
-        if (!flagsM.BRN_COND && flagsM.REG_WEN && !flagsM.MEM2REG)
+        if (*REG_WE_M && !flagsM.BRN_COND && flagsM.REG_WEN && !flagsM.MEM2REG)
         {
             // we only use BP_MEM (ALU result) when we will choose ALU result and write back
             if (rs1 == rd_mem)
@@ -601,7 +606,7 @@ public:
         }
 
         ControlUnitFlags flagsWB = INSTRUCTION(HU_CONTROL_WB->OldValue()).flags;
-        if (!flagsWB.BRN_COND && flagsM.REG_WEN)
+        if (*REG_WE_WB && !flagsWB.BRN_COND && flagsM.REG_WEN)
         {
             if (rs1 == rd_wb)
                 *HU_RS1 = 0x2;
@@ -613,8 +618,10 @@ public:
 public:
     HazardUnit():
         // not on scheme !!!
-        HU_CONTROL_M  (GetWire("Memory CONTROL_EX")),
-        HU_CONTROL_WB (GetWire("WB CONTROL_EX")),
+        HU_CONTROL_M (GetWire("Memory CONTROL_EX")),
+        HU_CONTROL_WB(GetWire("WB CONTROL_EX")),
+        REG_WE_M     (GetWire("Memory WE_GEN WB_WE")),
+        REG_WE_WB    (GetWire("WB_WE")),
 
         HU_EX_INSTR (GetWire("Execute INSTRUCTION")),
         HU_MEM_RDMEM(GetWire("Memory HU_MEM_RD")),
@@ -626,6 +633,9 @@ public:
 public:
     Wire* HU_CONTROL_M;
     Wire* HU_CONTROL_WB;
+
+    Wire* REG_WE_M;
+    Wire* REG_WE_WB;
 
     Wire* HU_EX_INSTR;
     Wire* HU_MEM_RDMEM;
@@ -1169,35 +1179,44 @@ public:
 void PrintWires()
 {
     // Prints output wires of all stages
+    std::cout << "-----------------------------------------------------" << std::endl;
+
     std::cout << "Fetch:" << '\n';
-    std::cout << "Fetch instr = 0x" << std::hex << (Wires["IMEM D"]->OldValue()) << std::dec << '\n';
+    std::cout << "Fetch instr = 0x" << std::hex << (Wires["IMEM D"]->OldValue()) << std::dec << (INSTRUCTION(Wires["IMEM D"]->OldValue()).opcode() == 0x63 ? " B*": " ADDI") << '\n';
+    //std::cout << "Fetch instr = 0x" << std::hex << (Wires["IMEM D"]->OldValue()) << ' ' << INSTRUCTION(Wires["IMEM D"]->OldValue()).opcode() << std::dec << '\n';
     std::cout << "PC_R        = "   << (Wires["PC_R"]->OldValue()) << '\n';
     std::cout << "PC          = "   << (Wires["PC"]->OldValue())   << '\n';
     std::cout << '\n';
 
     ControlUnitFlags flagsD = INSTRUCTION(Wires["CU FLAGS"]->OldValue()).flags;
     std::cout << "Decode:" << '\n';
-    std::cout << "Decode instr = 0x" << std::hex << (Wires["INSTRUCTION"]->OldValue()) << std::dec << '\n';
+    std::cout << "Decode instr = 0x" << std::hex << (Wires["INSTRUCTION"]->OldValue()) << std::dec << (INSTRUCTION(Wires["INSTRUCTION"]->OldValue()).opcode() == 0x63 ? " B*": " ADDI") << '\n';
     std::cout << "PC_DE        = "   << (Wires["PC_DE"]->OldValue()) << '\n';
     std::cout << "RF.RS1       = "   << (Wires["RS1"]->OldValue()) << '\n';
     std::cout << "RF.RS2       = "   << (Wires["RS2"]->OldValue()) << '\n';
     std::cout << "CU.flags     = "   << flagsD.ALUOP << ' ' << flagsD.SRC2 << ' ' << flagsD.BRN_COND << flagsD.MEM2REG << flagsD.MEM_WEN << flagsD.REG_WEN << '\n';
+    std::cout << "PC_RF        = "   << (Wires["PC_RF"]->OldValue()) << '\n';
+    std::cout << "PC_RD        = "   << (Wires["PC_RD"]->OldValue()) << '\n';
     std::cout << "V_DE         = "   << (Wires["V_DE"]->OldValue()) << '\n';
     std::cout << '\n';
 
     ControlUnitFlags flagsE = INSTRUCTION(Wires["CONTROL_EX"]->OldValue()).flags;
     std::cout << "Execute:" << '\n';
-    std::cout << "Execute instr = 0x" << std::hex << (Wires["Execute INSTRUCTION"]->OldValue()) << std::dec << '\n';
+    std::cout << "Execute instr = 0x" << std::hex << (Wires["Execute INSTRUCTION"]->OldValue()) << std::dec << (INSTRUCTION(Wires["Execute INSTRUCTION"]->OldValue()).opcode() == 0x63 ? " B*": " ADDI") << '\n';
+    std::cout << "PC_EX         = "   << (Wires["PC_EX"]->OldValue()) << '\n';
+    std::cout << "V_EX          = "   << (Wires["V_EX"]->OldValue())  << '\n';
     std::cout << "WE_GEN WB_WE  = "   << (Wires["WE_GEN WB_WE"]->OldValue())  << '\n';
     std::cout << "WE_GEN MEM_WE = "   << (Wires["WE_GEN MEM_WE"]->OldValue()) << '\n';
     std::cout << "CONTROL_EX    = "   << flagsE.ALUOP << ' ' << flagsE.SRC2 << ' ' << flagsE.REG_WEN << flagsE.MEM_WEN << flagsE.MEM2REG << flagsE.BRN_COND << '\n';
     std::cout << "RF.RS1        = "   << (Wires["Execute RS1"]->OldValue()) << '\n';
+    std::cout << "RS1V          = "   << (Wires["RS1V"]->OldValue()) << '\n';
+    std::cout << "SRC2          = "   << (Wires["SRC2"]->OldValue()) << '\n';
     std::cout << "ALU           = "   << (Wires["ALU RESULT"]->OldValue()) << '\n';
     std::cout << '\n';
 
     ControlUnitFlags flagsM = INSTRUCTION(Wires["Memory CONTROL_EX"]->OldValue()).flags;
     std::cout << "Memory:" << '\n';
-    std::cout << "Memory instr      = 0x" << std::hex << (Wires["Memory INSTRUCTION"]->OldValue()) << std::dec << '\n';
+    std::cout << "Memory instr      = 0x" << std::hex << (Wires["Memory INSTRUCTION"]->OldValue()) << std::dec << (INSTRUCTION(Wires["Memory INSTRUCTION"]->OldValue()).opcode() == 0x63 ? " B*": " ADDI")  << '\n';
     std::cout << "Memory CONTROL_EX = "   << flagsM.ALUOP << ' ' << flagsM.SRC2 << ' ' << flagsM.REG_WEN << flagsM.MEM_WEN << flagsM.MEM2REG << flagsM.BRN_COND << '\n';
     std::cout << "WB_WE             = "   << (Wires["Memory WE_GEN WB_WE"]->OldValue()) << '\n';
     std::cout << "WB_D              = "   << (Wires["Memory WB_D"]->OldValue())         << '\n';
@@ -1205,7 +1224,7 @@ void PrintWires()
 
     ControlUnitFlags flagsWB = INSTRUCTION(Wires["WB CONTROL_EX"]->OldValue()).flags;
     std::cout << "WB:" << '\n';
-    std::cout << "WB instr      = 0x" << std::hex << (Wires["WB_A"]->OldValue()) << std::dec << '\n';
+    std::cout << "WB instr      = 0x" << std::hex << (Wires["WB_A"]->OldValue()) << std::dec << (INSTRUCTION(Wires["WB_A"]->OldValue()).opcode() == 0x63 ? " B*": " ADDI")  << '\n';
     std::cout << "WB CONTROL_EX = "   << flagsWB.ALUOP << ' ' << flagsWB.SRC2 << ' ' << flagsWB.REG_WEN << flagsWB.MEM_WEN << flagsWB.MEM2REG << flagsWB.BRN_COND << '\n';
     std::cout << "WB_WE         = "   << (Wires["WB_WE"]->OldValue()) << '\n';
     std::cout << "WB_A          = "   << INSTRUCTION(Wires["WB_A"]->OldValue()).r_type.rd << '\n';
@@ -1223,8 +1242,11 @@ int main()
         MakeADDI(1, 1, 15),  //   r1 += 15;
         MakeADDI(2, 2, -1),
         MakeBEQ (0, 0, -12), // absolute short jump
-        MakeADDI(1, 1, 1), // NOP
-        MakeADDI(1, 1, 2), // NOP
+        MakeADDI(1, 1, 1), // r1 += 1
+        MakeADDI(1, 1, 2), // r1 += 2
+        MakeADDI(0,  0,  0), // NOP
+        MakeADDI(0,  0,  0), // NOP
+        MakeADDI(0,  0,  0), // NOP
         MakeADDI(0,  0,  0), // NOP
     };
 
@@ -1265,7 +1287,7 @@ int main()
     std::vector<BaseBlock*> STAGE_DECODE  = {
         dynamic_cast<FlipFlop*>(Wires["INSTRUCTION"]),
         dynamic_cast<FlipFlop*>(Wires["PC_DE"]),
-        dynamic_cast<FlipFlop*>(Wires["PC_RD"]),
+        dynamic_cast<FlipFlop*>(Wires["PC_RF"]),
         &V_DE_GEN,
         &CU,
         &RF,
@@ -1319,6 +1341,9 @@ int main()
 
     ++GLOBAL_STAGE;
 
+    // we need to do FlipFlop (Fetch -> Decode) for PC_R before execute stage as we recalculate PC_R value
+    dynamic_cast<FlipFlop*>(Wires["PC_RF"])->step();
+
     for(BaseBlock* block : STAGE_EXECUTE)
         block->step();
     for(BaseBlock* block : STAGE_DECODE)
@@ -1334,12 +1359,26 @@ int main()
     {
         try
         {
+            // we need to do FlipFlop (Fetch -> Decode) for PC_R before execute stage as we recalculate PC_R value
+            dynamic_cast<FlipFlop*>(Wires["PC_RF"])->step();
+
+            std::cout << "PC_RF = " << Wires["PC_RF"]->value << '\n';
+            std::cout << "PC_RD = " << Wires["PC_RD"]->value << '\n';
+
             for(BaseBlock* block : STAGE_MEMORY)
                 block->step();
             for(BaseBlock* block : STAGE_EXECUTE)
+            {
                 block->step();
+                //std::cout << "PC_RF = " << Wires["PC_RF"]->value << '\n';
+                //std::cout << "PC_RD = " << Wires["PC_RD"]->value << '\n';
+            }
             for(BaseBlock* block : STAGE_DECODE)
+            {
                 block->step();
+                //std::cout << "PC_RF = " << Wires["PC_RF"]->value << '\n';
+                //std::cout << "PC_RD = " << Wires["PC_RD"]->value << '\n';
+            }
             for(BaseBlock* block : STAGE_FETCH)
                 block->step();
 
